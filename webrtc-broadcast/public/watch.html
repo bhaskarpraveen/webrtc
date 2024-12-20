@@ -1,0 +1,134 @@
+<!-- Viewer page (watch.html) -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Viewer</title>
+  <style>
+    video {
+      width: 100%;
+      max-width: 800px;
+      height: auto;
+      background: #333;
+    }
+    .status {
+      margin: 10px 0;
+      padding: 10px;
+      background: #333;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <h2>Viewing Stream</h2>
+  <video id="remoteVideo" playsinline autoplay controls></video>
+  <div class="status">Waiting for broadcast...</div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const remoteVideo = document.getElementById('remoteVideo');
+    const statusDiv = document.querySelector('.status');
+    let peerConnection;
+    
+    const config = {
+      iceServers: [
+        { 
+          urls: [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302'
+          ]
+        }
+      ]
+    };
+
+    const socket = io.connect(window.location.origin);
+
+    // Request to watch broadcast
+    socket.emit('watcher');
+
+    socket.on('broadcaster', () => {
+      console.log('Broadcaster available');
+      socket.emit('watcher');
+    });
+
+    socket.on('offer', async (id, description) => {
+      try {
+        console.log('Received offer');
+        statusDiv.textContent = 'Received offer, setting up connection...';
+
+        peerConnection = new RTCPeerConnection(config);
+
+        // Handle incoming tracks
+        peerConnection.ontrack = (event) => {
+          console.log('Received track', event);
+          if (event.streams && event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+            statusDiv.textContent = 'Streaming...';
+          }
+        };
+
+        // Handle ICE candidates
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            console.log('Sending ICE candidate');
+            socket.emit('candidate', id, event.candidate);
+          }
+        };
+
+        // Connection state changes
+        peerConnection.onconnectionstatechange = () => {
+          console.log('Connection state:', peerConnection.connectionState);
+          statusDiv.textContent = `Connection: ${peerConnection.connectionState}`;
+        };
+
+        // ICE connection state changes
+        peerConnection.oniceconnectionstatechange = () => {
+          console.log('ICE state:', peerConnection.iceConnectionState);
+          statusDiv.textContent = `ICE: ${peerConnection.iceConnectionState}`;
+        };
+
+        await peerConnection.setRemoteDescription(description);
+        console.log('Set remote description');
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        console.log('Created and set local description');
+
+        socket.emit('answer', id, answer);
+        console.log('Sent answer');
+
+      } catch (error) {
+        console.error('Error handling offer:', error);
+        statusDiv.textContent = 'Error: ' + error.message;
+      }
+    });
+
+    socket.on('candidate', async (id, candidate) => {
+      try {
+        if (peerConnection) {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+          console.log('Added ICE candidate');
+        }
+      } catch (error) {
+        console.error('Error adding ICE candidate:', error);
+      }
+    });
+
+    socket.on('disconnectPeer', () => {
+      console.log('Broadcaster disconnected');
+      statusDiv.textContent = 'Broadcaster disconnected';
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+      remoteVideo.srcObject = null;
+    });
+
+    window.onunload = window.onbeforeunload = () => {
+      socket.close();
+      if (peerConnection) {
+        peerConnection.close();
+      }
+    };
+  </script>
+</body>
+</html>

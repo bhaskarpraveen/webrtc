@@ -1,0 +1,114 @@
+<!-- Broadcaster page (broadcast.html) -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Broadcaster</title>
+  <style>
+    video {
+      width: 100%;
+      max-width: 800px;
+      height: auto;
+      background: #333;
+    }
+    .status {
+      margin: 10px 0;
+      padding: 10px;
+      background: #333;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <h2>Broadcasting</h2>
+  <video id="localVideo" playsinline autoplay muted></video>
+  <div class="status"></div>
+  <button id="startButton">Start Broadcasting</button>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const localVideo = document.getElementById('localVideo');
+    const startButton = document.getElementById('startButton');
+    const statusDiv = document.querySelector('.status');
+    const peerConnections = {};
+    let localStream = null;
+
+    const config = {
+      iceServers: [
+        {
+          urls: [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302'
+          ]
+        }
+      ]
+    };
+
+    const socket = io.connect(window.location.origin);
+
+    startButton.addEventListener('click', async () => {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+        localVideo.srcObject = localStream;
+        socket.emit('broadcaster');
+        startButton.disabled = true;
+        statusDiv.textContent = 'Broadcasting...';
+      } catch (err) {
+        console.error('Error accessing media devices:', err);
+        statusDiv.textContent = 'Error starting broadcast: ' + err.message;
+      }
+    });
+
+    socket.on('watcher', id => {
+      console.log('New watcher:', id);
+      statusDiv.textContent = 'Viewer connected: ' + id;
+
+      const peerConnection = new RTCPeerConnection(config);
+      peerConnections[id] = peerConnection;
+
+      // Add local tracks to the connection
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+          socket.emit('candidate', id, event.candidate);
+        }
+      };
+
+      peerConnection
+        .createOffer()
+        .then(sdp => peerConnection.setLocalDescription(sdp))
+        .then(() => {
+          socket.emit('offer', id, peerConnection.localDescription);
+        })
+        .catch(err => console.error('Error creating offer:', err));
+    });
+
+    socket.on('answer', (id, description) => {
+      peerConnections[id].setRemoteDescription(description);
+    });
+
+    socket.on('candidate', (id, candidate) => {
+      peerConnections[id].addIceCandidate(new RTCIceCandidate(candidate));
+    });
+
+    socket.on('disconnectPeer', id => {
+      if (peerConnections[id]) {
+        peerConnections[id].close();
+        delete peerConnections[id];
+      }
+    });
+
+    window.onunload = window.onbeforeunload = () => {
+      socket.close();
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  </script>
+</body>
+</html>
